@@ -1,9 +1,18 @@
-﻿namespace Hextech;
+﻿using Hextech.Xmpp;
+
+namespace Hextech;
 
 class Program
 {
     static void Main(string[] args)
     {
-        Console.WriteLine("Hello, World!");
+
+        var xmppServer = new XmppServer();
+        xmppServer.Listen();
+        
+        while (true)
+        {
+            Thread.Sleep(500);
+        }
     }
 }
