@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
+using System.Net.Security;
 using System.Net.Sockets;
+using System.Security.Cryptography.X509Certificates;
 using System.Xml;
 using Hextech.Xmpp.Elements;
 using Hextech.Xmpp.Elements.Interfaces;
@@ -10,7 +12,7 @@ namespace Hextech.Xmpp;
 public class XmppClient
 {
     private TcpClient _client;
-    private NetworkStream _stream;
+    private Stream _stream;
 
     private ILogger Logger { get; }
 
@@ -20,7 +22,10 @@ public class XmppClient
     private Thread _readThread;
     
     private Jid Jid { get; set; }
-   
+    
+    private XmlReader XmlReader { get; set; }
+    private StreamWriter StreamWriter { get; set; }
+    
     public Guid Guid { get; } = Guid.NewGuid();
     
     public bool HasHandshaked { get; private set; } = false;
@@ -63,7 +68,24 @@ public class XmppClient
             case "auth":
                 OnAuthElement(reader);
                 break;
+            case "starttls":
+                OnStartTls();
+                break;
         }
+    }
+
+    private void OnStartTls()
+    {
+        var proceed = new ProceedElement("urn:ietf:params:xml:ns:xmpp-tls");
+        X509Certificate2 certificate = new X509Certificate2(File.ReadAllBytes("camille.pfx"), "wasd");
+        var sslStream = new SslStream(_stream);
+        Enqueue(proceed);
+        
+        _stream = sslStream;
+        sslStream.AuthenticateAsServer(certificate);
+        XmlReader = XmlReader.Create(sslStream);
+        StreamWriter = new StreamWriter(sslStream);
+        StreamWriter.AutoFlush = true;
     }
 
     private void OnAuthElement(XmlReader reader)
@@ -124,12 +146,12 @@ public class XmppClient
     {
         try
         {
-            var reader = XmlReader.Create(_stream);
-            while (reader.Read())
+            XmlReader = XmlReader.Create(_stream);
+            while (XmlReader.Read())
             {
-                if (reader.NodeType is XmlNodeType.Element)
+                if (XmlReader.NodeType is XmlNodeType.Element)
                 {
-                    OnXmlElement(reader);
+                    OnXmlElement(XmlReader);
                 }
             }
         }
@@ -147,13 +169,13 @@ public class XmppClient
     {
         try
         {
-            using var writer = new StreamWriter(_stream);
-            writer.AutoFlush = true;
+            StreamWriter = new StreamWriter(_stream);
+            StreamWriter.AutoFlush = true;
             while (true)
             {
                 while (_writeQueue.TryDequeue(out var element))
                 {
-                    element.Write(writer);
+                    element.Write(StreamWriter);
                     Logger.LogDebug($"Wrote {element}");
                 }
                 Thread.Sleep(10);
