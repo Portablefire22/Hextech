@@ -1,0 +1,7 @@
+﻿services:
+  hextech:
+    image: hextech
+    build:
+      context: .
+      dockerfile: Hextech/Dockerfile
+
