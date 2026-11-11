@@ -113,6 +113,7 @@ public class XmppClient
             {
                 var response = new SuccessElement(Authenticator.Value!);
                 HasHandshaked = true;
+                Logger.LogInformation($"Successfully Authenticated as {Jid.FullJID}");
                 Enqueue(response);
                 break;
             }
@@ -142,6 +143,7 @@ public class XmppClient
         {
             Logger.LogInformation($"Starting Authentication of {details.Name}");
             Authenticator = new ScramSha256Authenticator(this);
+            Jid = new Jid($"{details.Name}@{ConfigManager.HostName}", $"{details.Name}", "");
         }
         AuthState = Authenticator.Authenticate(details);
         return true;
