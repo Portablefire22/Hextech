@@ -2,10 +2,15 @@ using System.Collections.Concurrent;
 using System.Net.Security;
 using System.Net.Sockets;
 using System.Security.Cryptography.X509Certificates;
+using System.Text;
 using System.Xml;
+using Hextech.Authentication;
+using Hextech.Authentication.Methods;
 using Hextech.Xmpp.Elements;
+using Hextech.Xmpp.Elements.Features;
 using Hextech.Xmpp.Elements.Interfaces;
 using Microsoft.Extensions.Logging;
+using ConfigManager = Hextech.Config.ConfigurationManager;
 
 namespace Hextech.Xmpp;
 
@@ -20,6 +25,11 @@ public class XmppClient
     
     private Thread _writeThread;
     private Thread _readThread;
+    
+    public bool IsEncrypted {  get; private set; } = false;
+
+    public AuthenticationState AuthState { get; private set; } = AuthenticationState.PreAuthentication;
+    private XmppAuthenticator Authenticator { get; set; }
     
     private Jid Jid { get; set; }
     
@@ -71,6 +81,10 @@ public class XmppClient
             case "starttls":
                 OnStartTls();
                 break;
+            case "response":
+                if (AuthState != AuthenticationState.Authenticating) return;
+                OnAuthElement(reader); 
+                break;
         }
     }
 
@@ -86,35 +100,50 @@ public class XmppClient
         XmlReader = XmlReader.Create(sslStream);
         StreamWriter = new StreamWriter(sslStream);
         StreamWriter.AutoFlush = true;
+
+        IsEncrypted = true;
     }
 
     private void OnAuthElement(XmlReader reader)
     {
-        reader.Read();
-        if (AuthenticateUser(reader.Value))
+        AuthenticateUser(reader);
+        switch (AuthState)
         {
-            var response = new SuccessElement();
-            HasHandshaked = true;
-            Enqueue(response);
-        }
-        else
-        {
-            Disconnect();    
+            case AuthenticationState.Authenticated:
+            {
+                var response = new SuccessElement(Authenticator.Value!);
+                HasHandshaked = true;
+                Enqueue(response);
+                break;
+            }
+            case AuthenticationState.Failed:
+                Disconnect();
+                break;
         }
     }
 
-    private bool AuthenticateUser(string stanzaValue)
+    private bool AuthenticateUser(XmlReader reader)
     {
-        if (stanzaValue.Length == 0) return false;
-        if (Jid.FromAuthDetails(stanzaValue) is { } j)
+        ScramShaAuthenticationDetails details;
+        if (AuthState != AuthenticationState.Authenticating)
         {
-            Jid = j;
-        }  else return false;
-       
-        Logger.LogInformation($"Attempting to authenticate {Jid.FullJID} {Jid.Username} {Jid.Password}");
-        // TODO Authentication
-       
-        Logger.LogInformation($"Authentication Successful for {Jid.Username}");
+            var mechanism = reader.GetAttribute("mechanism");
+            Logger.LogInformation($"Mechanism: {mechanism}");
+            if (mechanism == null || !ConfigManager.SaslMethods.Contains(mechanism.ToUpperInvariant())) return false;
+        }
+        reader.Read();
+        if (reader.Value.Length == 0) return false;
+
+        var rawData = Convert.FromBase64String(reader.Value);
+        var str = Encoding.UTF8.GetString(rawData);
+        // TODO grab authenticator automatically with some provider
+        details = ScramShaAuthenticationDetails.FromString(str);
+        if (AuthState == AuthenticationState.PreAuthentication)
+        {
+            Logger.LogInformation($"Starting Authentication of {details.Name}");
+            Authenticator = new ScramSha256Authenticator(this);
+        }
+        AuthState = Authenticator.Authenticate(details);
         return true;
     }
 
@@ -123,15 +152,22 @@ public class XmppClient
         var streamEle = new StreamElement(from: "hextech.net", clientId: Guid.ToString());
         Enqueue(streamEle);
 
-        if (!HasHandshaked)
+        if (!IsEncrypted)
         {
             var tls = new StartTlsElement();
             Enqueue(tls);
+            return true;
+        }
+
+        if (!HasHandshaked)
+        {
+            var sendSasl = new XmppFeatures(ConfigManager.SaslFeature);
+            Enqueue(sendSasl);
         }
         else
         {
-            var features = new RegisterFeatures();
-            Enqueue(features);
+            var empty = new XmppFeatures(new XmppBind());
+            Enqueue(empty);
         }
         
         return true;
@@ -178,8 +214,13 @@ public class XmppClient
                     element.Write(StreamWriter);
                     Logger.LogDebug($"Wrote {element}");
                 }
+
                 Thread.Sleep(10);
             }
+        }
+        catch (Exception e)
+        {
+            Logger.LogError(e.ToString());
         }
         finally
         {

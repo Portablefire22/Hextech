@@ -10,4 +10,8 @@ public class RegisterFeatures : XmppElement, IWritableElement
                      + "</stream:features>";
         writer.Write(xml);
     }
+
+    public RegisterFeatures()
+    {
+    }
 }
